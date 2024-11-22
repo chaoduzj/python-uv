@@ -4067,7 +4067,7 @@ fn lock_conflicting_mixed() -> Result<()> {
 
         [package.dev-dependencies]
         group1 = [
-            { name = "sortedcontainers", version = "2.3.0", source = { registry = "https://pypi.org/simple" } },
+            { name = "sortedcontainers", version = "2.3.0", source = { registry = "https://pypi.org/simple" }, conflict-marker = "extra != 'extra1'" },
         ]
 
         [package.metadata]
