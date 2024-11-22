@@ -379,6 +379,7 @@ impl ResolverEnvironment {
                 ref exclude,
                 ..
             } => {
+                // FIXME: Account for groups here in addition to extras.
                 let mut conflict_marker = MarkerTree::TRUE;
                 for item in exclude.iter() {
                     if let Some(extra) = item.extra() {

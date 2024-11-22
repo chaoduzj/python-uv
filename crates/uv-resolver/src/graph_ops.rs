@@ -1,9 +1,12 @@
-use petgraph::graph::NodeIndex;
+use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
 use petgraph::{Direction, Graph};
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 
+use uv_normalize::ExtraName;
+
+use crate::resolution::ResolutionGraphNode;
 use crate::universal_marker::UniversalMarker;
 
 /// Determine the markers under which a package is reachable in the dependency tree.
@@ -78,4 +81,61 @@ pub(crate) fn marker_reachability<T>(
     }
 
     reachability
+}
+
+/// Traverse the given dependency graph and propagate activated markers.
+///
+/// For example, given an edge like `foo[x1] -> bar`, then it is known that
+/// `x1` is activated. This in turn can be used to simplify any downstream
+/// conflict markers with `extra == "x1"` in them.
+pub(crate) fn simplify_conflict_markers(graph: &mut Graph<ResolutionGraphNode, UniversalMarker>) {
+    // The set of activated extras (and TODO, in the future, groups)
+    // for each node. The ROOT nodes don't have any extras activated.
+    let mut activated: FxHashMap<NodeIndex, FxHashSet<ExtraName>> =
+        FxHashMap::with_capacity_and_hasher(graph.node_count(), FxBuildHasher);
+
+    // Collect the root nodes.
+    //
+    // Besides the actual virtual root node, virtual dev dependencies packages are also root
+    // nodes since the edges don't cover dev dependencies.
+    let mut queue: Vec<_> = graph
+        .node_indices()
+        .filter(|node_index| {
+            graph
+                .edges_directed(*node_index, Direction::Incoming)
+                .next()
+                .is_none()
+        })
+        .collect();
+
+    let mut assume_by_edge: FxHashMap<EdgeIndex, FxHashSet<ExtraName>> = FxHashMap::default();
+    let mut seen: FxHashSet<NodeIndex> = FxHashSet::default();
+    while let Some(parent_index) = queue.pop() {
+        for child_edge in graph.edges_directed(parent_index, Direction::Outgoing) {
+            // TODO: The below seems excessively clone-y.
+            // Consider tightening this up a bit.
+            let target = child_edge.target();
+            let mut extras: FxHashSet<ExtraName> =
+                activated.get(&parent_index).cloned().unwrap_or_default();
+            if let Some(extra) = graph[parent_index].extra() {
+                extras.insert(extra.clone());
+            }
+            if let Some(extra) = graph[target].extra() {
+                extras.insert(extra.clone());
+            }
+            activated.entry(target).or_default().extend(extras.clone());
+            assume_by_edge
+                .entry(child_edge.id())
+                .or_default()
+                .extend(extras);
+            if seen.insert(child_edge.target()) {
+                queue.push(child_edge.target());
+            }
+        }
+    }
+    for (edge_id, extras) in assume_by_edge {
+        for extra in &extras {
+            graph[edge_id].assume_extra(extra);
+        }
+    }
 }

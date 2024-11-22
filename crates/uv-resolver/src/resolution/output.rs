@@ -21,7 +21,7 @@ use uv_pypi_types::{
     Conflicts, HashDigest, ParsedUrlError, Requirement, VerbatimParsedUrl, Yanked,
 };
 
-use crate::graph_ops::marker_reachability;
+use crate::graph_ops::{marker_reachability, simplify_conflict_markers};
 use crate::pins::FilePins;
 use crate::preferences::Preferences;
 use crate::redirect::url_to_precise;
@@ -70,6 +70,13 @@ impl ResolutionGraphNode {
         match self {
             ResolutionGraphNode::Root => &UniversalMarker::TRUE,
             ResolutionGraphNode::Dist(dist) => &dist.marker,
+        }
+    }
+
+    pub(crate) fn extra(&self) -> Option<&ExtraName> {
+        match *self {
+            ResolutionGraphNode::Root => None,
+            ResolutionGraphNode::Dist(ref dist) => dist.extra.as_ref(),
         }
     }
 }
@@ -179,12 +186,18 @@ impl ResolverOutput {
         // Compute and apply the marker reachability.
         let mut reachability = marker_reachability(&graph, &fork_markers);
 
-        // Apply the reachability to the graph.
+        // Apply the reachability to the graph and imbibe world
+        // knowledge about conflicts.
         for index in graph.node_indices() {
             if let ResolutionGraphNode::Dist(dist) = &mut graph[index] {
                 dist.marker = reachability.remove(&index).unwrap_or_default();
+                dist.marker.imbibe(conflicts);
             }
         }
+        for weight in graph.edge_weights_mut() {
+            weight.imbibe(conflicts);
+        }
+        simplify_conflict_markers(&mut graph);
 
         // Discard any unreachable nodes.
         graph.retain_nodes(|graph, node| !graph[node].marker().is_false());

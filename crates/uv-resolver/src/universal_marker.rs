@@ -1,5 +1,8 @@
+use itertools::Itertools;
+
 use uv_normalize::ExtraName;
 use uv_pep508::{MarkerEnvironment, MarkerTree};
+use uv_pypi_types::Conflicts;
 
 /// A representation of a marker for use in universal resolution.
 ///
@@ -54,6 +57,61 @@ impl UniversalMarker {
     pub(crate) fn and(&mut self, other: UniversalMarker) {
         self.pep508_marker.and(other.pep508_marker);
         self.conflict_marker.and(other.conflict_marker);
+    }
+
+    /// Imbibes the world knowledge expressed by `conflicts` into this marker.
+    ///
+    /// This will effectively simplify the conflict marker in this universal
+    /// marker. In particular, it enables simplifying based on the fact that no
+    /// two items from the same set in the given conflicts can be active at a
+    /// given time.
+    pub(crate) fn imbibe(&mut self, conflicts: &Conflicts) {
+        if conflicts.is_empty() {
+            return;
+        }
+        // TODO: This is constructing what could be a big
+        // marker (depending on how many conflicts there are),
+        // which is invariant throughout the lifetime of the
+        // program. But it's doing it every time this routine
+        // is called. We should refactor the caller to build
+        // a marker from the `conflicts` once.
+        let mut marker = MarkerTree::FALSE;
+        for set in conflicts.iter() {
+            for (item1, item2) in set.iter().tuple_combinations() {
+                // FIXME: Account for groups here. And extra/group
+                // combinations too.
+                let (Some(extra1), Some(extra2)) = (item1.extra(), item2.extra()) else {
+                    continue;
+                };
+
+                let operator = uv_pep508::ExtraOperator::Equal;
+                let name = uv_pep508::MarkerValueExtra::Extra(extra1.clone());
+                let expr = uv_pep508::MarkerExpression::Extra { operator, name };
+                let marker1 = MarkerTree::expression(expr);
+
+                let operator = uv_pep508::ExtraOperator::Equal;
+                let name = uv_pep508::MarkerValueExtra::Extra(extra2.clone());
+                let expr = uv_pep508::MarkerExpression::Extra { operator, name };
+                let marker2 = MarkerTree::expression(expr);
+
+                let mut pair = MarkerTree::TRUE;
+                pair.and(marker1);
+                pair.and(marker2);
+                marker.or(pair);
+            }
+        }
+        let mut marker = marker.negate();
+        marker.implies(std::mem::take(&mut self.conflict_marker));
+        self.conflict_marker = marker;
+    }
+
+    /// Assumes that a given extra is activated.
+    ///
+    /// This may simplify the conflicting marker component of this universal
+    /// marker.
+    pub(crate) fn assume_extra(&mut self, extra: &ExtraName) {
+        self.conflict_marker = std::mem::take(&mut self.conflict_marker)
+            .simplify_extras_with(|candidate| candidate == extra);
     }
 
     /// Returns true if this universal marker will always evaluate to `true`.

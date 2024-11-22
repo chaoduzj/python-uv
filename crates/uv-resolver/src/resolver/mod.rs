@@ -2614,7 +2614,9 @@ pub(crate) struct ResolutionDependencyEdge {
 
 impl ResolutionDependencyEdge {
     pub(crate) fn universal_marker(&self) -> UniversalMarker {
-        // FIXME: Account for extras and groups here.
+        // We specifically do not account for conflict
+        // markers here. Instead, those are computed via
+        // a traversal on the resolution graph.
         UniversalMarker::new(self.marker.clone(), MarkerTree::TRUE)
     }
 }

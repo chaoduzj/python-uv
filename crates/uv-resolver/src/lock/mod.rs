@@ -3580,6 +3580,9 @@ impl Dependency {
         if let Some(marker) = self.simplified_marker.try_to_string() {
             table.insert("marker", value(marker));
         }
+        if let Some(conflict_marker) = self.complexified_marker.conflict().try_to_string() {
+            table.insert("conflict-marker", value(conflict_marker));
+        }
 
         table
     }
@@ -3615,7 +3618,8 @@ struct DependencyWire {
     extra: BTreeSet<ExtraName>,
     #[serde(default)]
     marker: SimplifiedMarkerTree,
-    // FIXME: Add support for representing conflict markers.
+    #[serde(default)]
+    conflict_marker: MarkerTree,
 }
 
 impl DependencyWire {
@@ -3629,8 +3633,7 @@ impl DependencyWire {
             package_id: self.package_id.unwire(unambiguous_package_ids)?,
             extra: self.extra,
             simplified_marker: self.marker,
-            // FIXME: Support reading conflict markers.
-            complexified_marker: UniversalMarker::new(complexified_marker, MarkerTree::TRUE),
+            complexified_marker: UniversalMarker::new(complexified_marker, self.conflict_marker),
         })
     }
 }
