@@ -73,10 +73,13 @@ impl ResolutionGraphNode {
         }
     }
 
-    pub(crate) fn extra(&self) -> Option<&ExtraName> {
+    pub(crate) fn package_extra_names(&self) -> Option<(&PackageName, &ExtraName)> {
         match *self {
             ResolutionGraphNode::Root => None,
-            ResolutionGraphNode::Dist(ref dist) => dist.extra.as_ref(),
+            ResolutionGraphNode::Dist(ref dist) => {
+                let extra = dist.extra.as_ref()?;
+                Some((&dist.name, extra))
+            }
         }
     }
 }

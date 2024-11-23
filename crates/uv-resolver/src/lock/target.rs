@@ -164,6 +164,7 @@ impl<'env> InstallTarget<'env> {
 
         let mut queue: VecDeque<(&Package, Option<&ExtraName>)> = VecDeque::new();
         let mut seen = FxHashSet::default();
+        let mut activated_extras: Vec<(PackageName, ExtraName)> = vec![];
 
         let root = petgraph.add_node(Node::Root);
 
@@ -198,11 +199,13 @@ impl<'env> InstallTarget<'env> {
                     ExtrasSpecification::All => {
                         for extra in dist.optional_dependencies.keys() {
                             queue.push_back((dist, Some(extra)));
+                            activated_extras.push((dist.id.name.clone(), extra.clone()));
                         }
                     }
                     ExtrasSpecification::Some(extras) => {
                         for extra in extras {
                             queue.push_back((dist, Some(extra)));
+                            activated_extras.push((dist.id.name.clone(), extra.clone()));
                         }
                     }
                 }
@@ -221,7 +224,10 @@ impl<'env> InstallTarget<'env> {
                 })
                 .flatten()
             {
-                if !dep.complexified_marker.satisfies(marker_env, extras, dev) {
+                if !dep
+                    .complexified_marker
+                    .satisfies(marker_env, &activated_extras, dev)
+                {
                     continue;
                 }
 
@@ -347,7 +353,10 @@ impl<'env> InstallTarget<'env> {
                 Either::Right(package.dependencies.iter())
             };
             for dep in deps {
-                if !dep.complexified_marker.satisfies(marker_env, extras, dev) {
+                if !dep
+                    .complexified_marker
+                    .satisfies(marker_env, &activated_extras, dev)
+                {
                     continue;
                 }
 

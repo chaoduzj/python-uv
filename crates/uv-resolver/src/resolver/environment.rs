@@ -383,13 +383,14 @@ impl ResolverEnvironment {
                 let mut conflict_marker = ConflictMarker::TRUE;
                 for item in exclude.iter() {
                     if let Some(extra) = item.extra() {
-                        conflict_marker =
-                            conflict_marker.and(ConflictMarker::extra(extra.clone()).negate());
+                        conflict_marker = conflict_marker
+                            .and(ConflictMarker::extra(item.package(), extra).negate());
                     }
                 }
                 for item in include.iter() {
                     if let Some(extra) = item.extra() {
-                        conflict_marker = conflict_marker.and(ConflictMarker::extra(extra.clone()));
+                        conflict_marker =
+                            conflict_marker.and(ConflictMarker::extra(item.package(), extra));
                     }
                 }
                 Some(UniversalMarker::new(markers.clone(), conflict_marker))

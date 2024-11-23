@@ -4,7 +4,7 @@ use petgraph::{Direction, Graph};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::collections::hash_map::Entry;
 
-use uv_normalize::ExtraName;
+use uv_normalize::{ExtraName, PackageName};
 
 use crate::resolution::ResolutionGraphNode;
 use crate::universal_marker::UniversalMarker;
@@ -91,7 +91,7 @@ pub(crate) fn marker_reachability<T>(
 pub(crate) fn simplify_conflict_markers(graph: &mut Graph<ResolutionGraphNode, UniversalMarker>) {
     // The set of activated extras (and TODO, in the future, groups)
     // for each node. The ROOT nodes don't have any extras activated.
-    let mut activated: FxHashMap<NodeIndex, FxHashSet<ExtraName>> =
+    let mut activated: FxHashMap<NodeIndex, FxHashSet<(PackageName, ExtraName)>> =
         FxHashMap::with_capacity_and_hasher(graph.node_count(), FxBuildHasher);
 
     // Collect the root nodes.
@@ -108,20 +108,21 @@ pub(crate) fn simplify_conflict_markers(graph: &mut Graph<ResolutionGraphNode, U
         })
         .collect();
 
-    let mut assume_by_edge: FxHashMap<EdgeIndex, FxHashSet<ExtraName>> = FxHashMap::default();
+    let mut assume_by_edge: FxHashMap<EdgeIndex, FxHashSet<(PackageName, ExtraName)>> =
+        FxHashMap::default();
     let mut seen: FxHashSet<NodeIndex> = FxHashSet::default();
     while let Some(parent_index) = queue.pop() {
         for child_edge in graph.edges_directed(parent_index, Direction::Outgoing) {
             // TODO: The below seems excessively clone-y.
             // Consider tightening this up a bit.
             let target = child_edge.target();
-            let mut extras: FxHashSet<ExtraName> =
+            let mut extras: FxHashSet<(PackageName, ExtraName)> =
                 activated.get(&parent_index).cloned().unwrap_or_default();
-            if let Some(extra) = graph[parent_index].extra() {
-                extras.insert(extra.clone());
+            if let Some((package, extra)) = graph[parent_index].package_extra_names() {
+                extras.insert((package.clone(), extra.clone()));
             }
-            if let Some(extra) = graph[target].extra() {
-                extras.insert(extra.clone());
+            if let Some((package, extra)) = graph[target].package_extra_names() {
+                extras.insert((package.clone(), extra.clone()));
             }
             activated.entry(target).or_default().extend(extras.clone());
             assume_by_edge
@@ -134,8 +135,8 @@ pub(crate) fn simplify_conflict_markers(graph: &mut Graph<ResolutionGraphNode, U
         }
     }
     for (edge_id, extras) in assume_by_edge {
-        for extra in &extras {
-            graph[edge_id].assume_extra(extra);
+        for &(ref package, ref extra) in &extras {
+            graph[edge_id].assume_extra(package, extra);
         }
     }
 }

@@ -3,7 +3,7 @@
 use itertools::Itertools;
 
 use uv_configuration::{DevGroupsManifest, ExtrasSpecification};
-use uv_normalize::ExtraName;
+use uv_normalize::{ExtraName, PackageName};
 use uv_pep508::{MarkerEnvironment, MarkerEnvironmentBuilder, MarkerTree};
 use uv_pypi_types::Conflicts;
 
@@ -95,8 +95,8 @@ impl UniversalMarker {
                 let (Some(extra1), Some(extra2)) = (item1.extra(), item2.extra()) else {
                     continue;
                 };
-                let pair = ConflictMarker::extra(extra1.clone())
-                    .and(ConflictMarker::extra(extra2.clone()));
+                let pair = ConflictMarker::extra(item1.package(), extra1)
+                    .and(ConflictMarker::extra(item2.package(), extra2));
                 marker = marker.or(pair);
             }
         }
@@ -105,12 +105,12 @@ impl UniversalMarker {
             .implies(std::mem::take(&mut self.conflict_marker));
     }
 
-    /// Assumes that a given extra is activated.
+    /// Assumes that a given extra for the given package is activated.
     ///
     /// This may simplify the conflicting marker component of this universal
     /// marker.
-    pub(crate) fn assume_extra(&mut self, extra: &ExtraName) {
-        self.conflict_marker = self.conflict_marker.assume_extra(extra);
+    pub(crate) fn assume_extra(&mut self, package: &PackageName, extra: &ExtraName) {
+        self.conflict_marker = self.conflict_marker.assume_extra(package, extra);
     }
 
     /// Returns true if this universal marker will always evaluate to `true`.
@@ -135,7 +135,15 @@ impl UniversalMarker {
     /// Returns true if this universal marker is satisfied by the given
     /// marker environment and list of activated extras.
     pub(crate) fn evaluate(&self, env: &MarkerEnvironment, extras: &[ExtraName]) -> bool {
-        self.pep508_marker.evaluate(env, extras) && self.conflict_marker.evaluate(extras)
+        // We specifically evaluate the conflict marker with an empty set of
+        // extras because this seems to best capture the intent here. Namely,
+        // in this context, we don't know the packages associated with the
+        // given extras, which means we can't really evaluate the conflict
+        // marker. But note that evaluation here is not vacuous. By providing
+        // an empty list, conflict markers like `extra != 'package[x1]'`
+        // will evaluate to `true`, while conflict markers like
+        // `extra == 'package[x2]'` will evaluate to `false`.
+        self.pep508_marker.evaluate(env, extras) && self.conflict_marker.evaluate(&[])
     }
 
     /// Returns true if this universal marker is satisfied by the given
@@ -145,19 +153,19 @@ impl UniversalMarker {
     pub(crate) fn satisfies(
         &self,
         env: &MarkerEnvironment,
-        extras: &ExtrasSpecification,
+        activated_extras: &[(PackageName, ExtraName)],
         _dev: &DevGroupsManifest,
     ) -> bool {
         if !self.pep508_marker.evaluate(env, &[]) {
             return false;
         }
-        let extra_list = match *extras {
-            // TODO(ag): This should still evaluate `dev`.
-            ExtrasSpecification::All => return true,
-            ExtrasSpecification::None => &[][..],
-            ExtrasSpecification::Some(ref list) => list,
-        };
-        self.conflict_marker.evaluate(extra_list)
+        // let extra_list = match *extras {
+        // // TODO(ag): This should still evaluate `dev`.
+        // ExtrasSpecification::All => return true,
+        // ExtrasSpecification::None => &[][..],
+        // ExtrasSpecification::Some(ref list) => list,
+        // };
+        self.conflict_marker.evaluate(activated_extras)
     }
 
     /// Returns the PEP 508 marker for this universal marker.
@@ -227,11 +235,11 @@ impl ConflictMarker {
         marker: MarkerTree::FALSE,
     };
 
-    /// Create a conflict marker that is true only when the given extra is
-    /// activated.
-    pub fn extra(name: ExtraName) -> ConflictMarker {
+    /// Create a conflict marker that is true only when the given extra for the
+    /// given package is activated.
+    pub fn extra(package: &PackageName, extra: &ExtraName) -> ConflictMarker {
         let operator = uv_pep508::ExtraOperator::Equal;
-        let name = uv_pep508::MarkerValueExtra::Extra(name);
+        let name = uv_pep508::MarkerValueExtra::Extra(encode_package_extra(package, extra));
         let expr = uv_pep508::MarkerExpression::Extra { operator, name };
         let marker = MarkerTree::expression(expr);
         ConflictMarker { marker }
@@ -279,11 +287,12 @@ impl ConflictMarker {
     ///
     /// This may simplify the marker.
     #[must_use]
-    pub(crate) fn assume_extra(&self, extra: &ExtraName) -> ConflictMarker {
+    pub(crate) fn assume_extra(&self, package: &PackageName, extra: &ExtraName) -> ConflictMarker {
+        let extra = encode_package_extra(package, extra);
         let marker = self
             .marker
             .clone()
-            .simplify_extras_with(|candidate| candidate == extra);
+            .simplify_extras_with(|candidate| *candidate == extra);
         ConflictMarker { marker }
     }
 
@@ -307,7 +316,7 @@ impl ConflictMarker {
 
     /// Returns true if this conflict marker is satisfied by the given
     /// list of activated extras.
-    pub(crate) fn evaluate(&self, extras: &[ExtraName]) -> bool {
+    pub(crate) fn evaluate(&self, extras: &[(PackageName, ExtraName)]) -> bool {
         static DUMMY: std::sync::LazyLock<MarkerEnvironment> = std::sync::LazyLock::new(|| {
             MarkerEnvironment::try_from(MarkerEnvironmentBuilder {
                 implementation_name: "",
@@ -324,7 +333,11 @@ impl ConflictMarker {
             })
             .unwrap()
         });
-        self.marker.evaluate(&DUMMY, extras)
+        let extras = extras
+            .iter()
+            .map(|&(ref package, ref extra)| encode_package_extra(package, extra))
+            .collect::<Vec<ExtraName>>();
+        self.marker.evaluate(&DUMMY, &extras)
     }
 }
 
@@ -381,4 +394,11 @@ impl serde::Serialize for ConflictMarker {
     {
         serializer.serialize_str(&self.to_string())
     }
+}
+
+fn encode_package_extra(package: &PackageName, extra: &ExtraName) -> ExtraName {
+    // This is OK because `PackageName` and `ExtraName` have the same
+    // validation rules, and we combine them in a way that always results
+    // in a valid name.
+    ExtraName::new(format!("extra-{package}-{extra}")).unwrap()
 }
