@@ -63,7 +63,7 @@ pub(crate) use crate::resolver::availability::{
 };
 use crate::resolver::batch_prefetch::BatchPrefetcher;
 pub use crate::resolver::derivation::DerivationChainBuilder;
-use crate::universal_marker::UniversalMarker;
+use crate::universal_marker::{ConflictMarker, UniversalMarker};
 
 use crate::resolver::groups::Groups;
 pub use crate::resolver::index::InMemoryIndex;
@@ -2617,7 +2617,7 @@ impl ResolutionDependencyEdge {
         // We specifically do not account for conflict
         // markers here. Instead, those are computed via
         // a traversal on the resolution graph.
-        UniversalMarker::new(self.marker.clone(), MarkerTree::TRUE)
+        UniversalMarker::new(self.marker.clone(), ConflictMarker::TRUE)
     }
 }
 

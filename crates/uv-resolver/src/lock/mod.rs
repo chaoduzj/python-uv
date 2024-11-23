@@ -19,7 +19,7 @@ pub use crate::lock::target::InstallTarget;
 pub use crate::lock::tree::TreeDisplay;
 use crate::requires_python::SimplifiedMarkerTree;
 use crate::resolution::{AnnotatedDist, ResolutionGraphNode};
-use crate::universal_marker::UniversalMarker;
+use crate::universal_marker::{ConflictMarker, UniversalMarker};
 use crate::{
     ExcludeNewer, InMemoryIndex, MetadataResponse, PrereleaseMode, RequiresPython, ResolutionMode,
     ResolverOutput,
@@ -61,21 +61,21 @@ static LINUX_MARKERS: LazyLock<UniversalMarker> = LazyLock::new(|| {
         "platform_system == 'Linux' and os_name == 'posix' and sys_platform == 'linux'",
     )
     .unwrap();
-    UniversalMarker::new(pep508, MarkerTree::TRUE)
+    UniversalMarker::new(pep508, ConflictMarker::TRUE)
 });
 static WINDOWS_MARKERS: LazyLock<UniversalMarker> = LazyLock::new(|| {
     let pep508 = MarkerTree::from_str(
         "platform_system == 'Windows' and os_name == 'nt' and sys_platform == 'win32'",
     )
     .unwrap();
-    UniversalMarker::new(pep508, MarkerTree::TRUE)
+    UniversalMarker::new(pep508, ConflictMarker::TRUE)
 });
 static MAC_MARKERS: LazyLock<UniversalMarker> = LazyLock::new(|| {
     let pep508 = MarkerTree::from_str(
         "platform_system == 'Darwin' and os_name == 'posix' and sys_platform == 'darwin'",
     )
     .unwrap();
-    UniversalMarker::new(pep508, MarkerTree::TRUE)
+    UniversalMarker::new(pep508, ConflictMarker::TRUE)
 });
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -1446,7 +1446,9 @@ impl TryFrom<LockWire> for Lock {
             .map(|simplified_marker| simplified_marker.into_marker(&wire.requires_python))
             // TODO(ag): Consider whether this should also deserialize a conflict marker.
             // We currently aren't serializing. Dropping it completely is likely to be wrong.
-            .map(|complexified_marker| UniversalMarker::new(complexified_marker, MarkerTree::TRUE))
+            .map(|complexified_marker| {
+                UniversalMarker::new(complexified_marker, ConflictMarker::TRUE)
+            })
             .collect();
         let lock = Lock::new(
             wire.version,
@@ -2245,7 +2247,7 @@ impl PackageWire {
                 // TODO(ag): Consider whether this should also deserialize a conflict marker.
                 // We currently aren't serializing. Dropping it completely is likely to be wrong.
                 .map(|complexified_marker| {
-                    UniversalMarker::new(complexified_marker, MarkerTree::TRUE)
+                    UniversalMarker::new(complexified_marker, ConflictMarker::TRUE)
                 })
                 .collect(),
             dependencies: unwire_deps(self.dependencies)?,
@@ -3580,8 +3582,11 @@ impl Dependency {
         if let Some(marker) = self.simplified_marker.try_to_string() {
             table.insert("marker", value(marker));
         }
-        if let Some(conflict_marker) = self.complexified_marker.conflict().try_to_string() {
-            table.insert("conflict-marker", value(conflict_marker));
+        if !self.complexified_marker.conflict().is_true() {
+            table.insert(
+                "conflict-marker",
+                value(self.complexified_marker.conflict().to_string()),
+            );
         }
 
         table
@@ -3619,7 +3624,7 @@ struct DependencyWire {
     #[serde(default)]
     marker: SimplifiedMarkerTree,
     #[serde(rename = "conflict-marker", default)]
-    conflict_marker: MarkerTree,
+    conflict_marker: ConflictMarker,
 }
 
 impl DependencyWire {

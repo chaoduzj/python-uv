@@ -1,9 +1,17 @@
+#![allow(warnings)]
+
 use itertools::Itertools;
 
 use uv_configuration::{DevGroupsManifest, ExtrasSpecification};
 use uv_normalize::ExtraName;
-use uv_pep508::{MarkerEnvironment, MarkerTree};
+use uv_pep508::{MarkerEnvironment, MarkerEnvironmentBuilder, MarkerTree};
 use uv_pypi_types::Conflicts;
+
+// BREADCRUMBS: Work on a new `ConflictMarker` type instead of using
+// `MarkerTree` directly below. And instead of storing only extra/group
+// names, we need to store package names too. Wire everything up. This
+// will also take us toward making groups work. But keep going with just
+// extras for now.
 
 /// A representation of a marker for use in universal resolution.
 ///
@@ -20,24 +28,27 @@ use uv_pypi_types::Conflicts;
 #[derive(Debug, Default, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub struct UniversalMarker {
     pep508_marker: MarkerTree,
-    conflict_marker: MarkerTree,
+    conflict_marker: ConflictMarker,
 }
 
 impl UniversalMarker {
     /// A constant universal marker that always evaluates to `true`.
     pub(crate) const TRUE: UniversalMarker = UniversalMarker {
         pep508_marker: MarkerTree::TRUE,
-        conflict_marker: MarkerTree::TRUE,
+        conflict_marker: ConflictMarker::TRUE,
     };
 
     /// A constant universal marker that always evaluates to `false`.
     pub(crate) const FALSE: UniversalMarker = UniversalMarker {
         pep508_marker: MarkerTree::FALSE,
-        conflict_marker: MarkerTree::FALSE,
+        conflict_marker: ConflictMarker::FALSE,
     };
 
     /// Creates a new universal marker from its constituent pieces.
-    pub(crate) fn new(pep508_marker: MarkerTree, conflict_marker: MarkerTree) -> UniversalMarker {
+    pub(crate) fn new(
+        pep508_marker: MarkerTree,
+        conflict_marker: ConflictMarker,
+    ) -> UniversalMarker {
         UniversalMarker {
             pep508_marker,
             conflict_marker,
@@ -49,7 +60,7 @@ impl UniversalMarker {
     /// `other` evaluate to `true`.
     pub(crate) fn or(&mut self, other: UniversalMarker) {
         self.pep508_marker.or(other.pep508_marker);
-        self.conflict_marker.or(other.conflict_marker);
+        self.conflict_marker = self.conflict_marker.or(other.conflict_marker);
     }
 
     /// Combine this universal marker with the one given in a way that
@@ -57,7 +68,7 @@ impl UniversalMarker {
     /// `self` and `other` evaluate to `true`.
     pub(crate) fn and(&mut self, other: UniversalMarker) {
         self.pep508_marker.and(other.pep508_marker);
-        self.conflict_marker.and(other.conflict_marker);
+        self.conflict_marker = self.conflict_marker.and(other.conflict_marker);
     }
 
     /// Imbibes the world knowledge expressed by `conflicts` into this marker.
@@ -76,7 +87,7 @@ impl UniversalMarker {
         // program. But it's doing it every time this routine
         // is called. We should refactor the caller to build
         // a marker from the `conflicts` once.
-        let mut marker = MarkerTree::FALSE;
+        let mut marker = ConflictMarker::FALSE;
         for set in conflicts.iter() {
             for (item1, item2) in set.iter().tuple_combinations() {
                 // FIXME: Account for groups here. And extra/group
@@ -84,26 +95,14 @@ impl UniversalMarker {
                 let (Some(extra1), Some(extra2)) = (item1.extra(), item2.extra()) else {
                     continue;
                 };
-
-                let operator = uv_pep508::ExtraOperator::Equal;
-                let name = uv_pep508::MarkerValueExtra::Extra(extra1.clone());
-                let expr = uv_pep508::MarkerExpression::Extra { operator, name };
-                let marker1 = MarkerTree::expression(expr);
-
-                let operator = uv_pep508::ExtraOperator::Equal;
-                let name = uv_pep508::MarkerValueExtra::Extra(extra2.clone());
-                let expr = uv_pep508::MarkerExpression::Extra { operator, name };
-                let marker2 = MarkerTree::expression(expr);
-
-                let mut pair = MarkerTree::TRUE;
-                pair.and(marker1);
-                pair.and(marker2);
-                marker.or(pair);
+                let pair = ConflictMarker::extra(extra1.clone())
+                    .and(ConflictMarker::extra(extra2.clone()));
+                marker = marker.or(pair);
             }
         }
-        let mut marker = marker.negate();
-        marker.implies(std::mem::take(&mut self.conflict_marker));
-        self.conflict_marker = marker;
+        self.conflict_marker = marker
+            .negate()
+            .implies(std::mem::take(&mut self.conflict_marker));
     }
 
     /// Assumes that a given extra is activated.
@@ -111,8 +110,7 @@ impl UniversalMarker {
     /// This may simplify the conflicting marker component of this universal
     /// marker.
     pub(crate) fn assume_extra(&mut self, extra: &ExtraName) {
-        self.conflict_marker = std::mem::take(&mut self.conflict_marker)
-            .simplify_extras_with(|candidate| candidate == extra);
+        self.conflict_marker = self.conflict_marker.assume_extra(extra);
     }
 
     /// Returns true if this universal marker will always evaluate to `true`.
@@ -137,7 +135,7 @@ impl UniversalMarker {
     /// Returns true if this universal marker is satisfied by the given
     /// marker environment and list of activated extras.
     pub(crate) fn evaluate(&self, env: &MarkerEnvironment, extras: &[ExtraName]) -> bool {
-        self.pep508_marker.evaluate(env, extras) && self.conflict_marker.evaluate(env, extras)
+        self.pep508_marker.evaluate(env, extras) && self.conflict_marker.evaluate(extras)
     }
 
     /// Returns true if this universal marker is satisfied by the given
@@ -159,7 +157,7 @@ impl UniversalMarker {
             ExtrasSpecification::None => &[][..],
             ExtrasSpecification::Some(ref list) => list,
         };
-        self.conflict_marker.evaluate(env, extra_list)
+        self.conflict_marker.evaluate(extra_list)
     }
 
     /// Returns the PEP 508 marker for this universal marker.
@@ -185,7 +183,7 @@ impl UniversalMarker {
     /// of non-trivial conflict markers and fails if any are found. (Because
     /// conflict markers cannot be represented in the `requirements.txt`
     /// format.)
-    pub fn conflict(&self) -> &MarkerTree {
+    pub fn conflict(&self) -> &ConflictMarker {
         &self.conflict_marker
     }
 }
@@ -197,14 +195,190 @@ impl std::fmt::Display for UniversalMarker {
         }
         match (
             self.pep508_marker.contents(),
-            self.conflict_marker.contents(),
+            self.conflict_marker.is_true(),
         ) {
-            (None, None) => write!(f, "`true`"),
-            (Some(pep508), None) => write!(f, "`{pep508}`"),
-            (None, Some(conflict)) => write!(f, "`true` (conflict marker: `{conflict}`)"),
-            (Some(pep508), Some(conflict)) => {
-                write!(f, "`{pep508}` (conflict marker: `{conflict}`)")
+            (None, true) => write!(f, "`true`"),
+            (Some(pep508), true) => write!(f, "`{pep508}`"),
+            (None, false) => write!(f, "`true` (conflict marker: `{}`)", self.conflict_marker),
+            (Some(pep508), false) => {
+                write!(
+                    f,
+                    "`{pep508}` (conflict marker: `{}`)",
+                    self.conflict_marker
+                )
             }
         }
+    }
+}
+
+#[derive(Default, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub struct ConflictMarker {
+    marker: MarkerTree,
+}
+
+impl ConflictMarker {
+    /// A constant conflict marker that always evaluates to `true`.
+    pub const TRUE: ConflictMarker = ConflictMarker {
+        marker: MarkerTree::TRUE,
+    };
+
+    /// A constant conflict marker that always evaluates to `false`.
+    pub const FALSE: ConflictMarker = ConflictMarker {
+        marker: MarkerTree::FALSE,
+    };
+
+    /// Create a conflict marker that is true only when the given extra is
+    /// activated.
+    pub fn extra(name: ExtraName) -> ConflictMarker {
+        let operator = uv_pep508::ExtraOperator::Equal;
+        let name = uv_pep508::MarkerValueExtra::Extra(name);
+        let expr = uv_pep508::MarkerExpression::Extra { operator, name };
+        let marker = MarkerTree::expression(expr);
+        ConflictMarker { marker }
+    }
+
+    /// Returns a new conflict marker that is the negation of this one.
+    #[must_use]
+    pub fn negate(&self) -> ConflictMarker {
+        ConflictMarker {
+            marker: self.marker.negate(),
+        }
+    }
+
+    /// Returns a new conflict marker corresponding to the union of `self` and
+    /// `other`.
+    #[must_use]
+    pub fn or(&self, other: ConflictMarker) -> ConflictMarker {
+        let mut marker = self.marker.clone();
+        marker.or(other.marker);
+        ConflictMarker { marker }
+    }
+
+    /// Returns a new conflict marker corresponding to the intersection of
+    /// `self` and `other`.
+    #[must_use]
+    pub fn and(&self, other: ConflictMarker) -> ConflictMarker {
+        let mut marker = self.marker.clone();
+        marker.and(other.marker);
+        ConflictMarker { marker }
+    }
+
+    /// Returns a new conflict marker corresponding to the logical implication
+    /// of `self` and the given consequent.
+    ///
+    /// If the conflict marker returned is always `true`, then it can be said
+    /// that `self` implies `consequent`.
+    #[must_use]
+    pub fn implies(&self, other: ConflictMarker) -> ConflictMarker {
+        let mut marker = self.marker.clone();
+        marker.implies(other.marker);
+        ConflictMarker { marker }
+    }
+
+    /// Returns a new conflict marker with the given extra assumed to be true.
+    ///
+    /// This may simplify the marker.
+    #[must_use]
+    pub(crate) fn assume_extra(&self, extra: &ExtraName) -> ConflictMarker {
+        let marker = self
+            .marker
+            .clone()
+            .simplify_extras_with(|candidate| candidate == extra);
+        ConflictMarker { marker }
+    }
+
+    /// Returns true if this conflict marker will always evaluate to `true`.
+    pub fn is_true(&self) -> bool {
+        self.marker.is_true()
+    }
+
+    /// Returns true if this conflict marker will always evaluate to `false`.
+    pub fn is_false(&self) -> bool {
+        self.marker.is_false()
+    }
+
+    /// Returns true if this conflict marker is disjoint with the one given.
+    ///
+    /// Two conflict markers are disjoint when it is impossible for them both
+    /// to evaluate to `true` simultaneously.
+    pub(crate) fn is_disjoint(&self, other: &ConflictMarker) -> bool {
+        self.marker.is_disjoint(&other.marker)
+    }
+
+    /// Returns true if this conflict marker is satisfied by the given
+    /// list of activated extras.
+    pub(crate) fn evaluate(&self, extras: &[ExtraName]) -> bool {
+        static DUMMY: std::sync::LazyLock<MarkerEnvironment> = std::sync::LazyLock::new(|| {
+            MarkerEnvironment::try_from(MarkerEnvironmentBuilder {
+                implementation_name: "",
+                implementation_version: "3.7",
+                os_name: "linux",
+                platform_machine: "",
+                platform_python_implementation: "",
+                platform_release: "",
+                platform_system: "",
+                platform_version: "",
+                python_full_version: "3.7",
+                python_version: "3.7",
+                sys_platform: "linux",
+            })
+            .unwrap()
+        });
+        self.marker.evaluate(&DUMMY, extras)
+    }
+}
+
+impl std::fmt::Display for ConflictMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // TODO: This shouldn't be exposing the internal marker,
+        // but instead transforming it.
+        if self.marker.is_false() {
+            return write!(f, "false");
+        }
+        let Some(contents) = self.marker.contents() else {
+            return write!(f, "true");
+        };
+        write!(f, "{contents}")
+    }
+}
+
+impl std::fmt::Debug for ConflictMarker {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        // This intentionally exposes the underlying PEP 508 marker
+        // representation so that programmers can debug it if there's
+        // something wrong with it.
+        write!(f, "ConflictMarker({:?})", self.marker)
+    }
+}
+
+// TODO: This should parse a custom format. But we expose
+// the raw PEP 508 marker for now for simplicity. We'll
+// write the custom parser later.
+impl std::str::FromStr for ConflictMarker {
+    type Err = uv_pep508::Pep508Error;
+
+    fn from_str(markers: &str) -> Result<Self, Self::Err> {
+        Ok(ConflictMarker {
+            marker: markers.parse()?,
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ConflictMarker {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        std::str::FromStr::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+impl serde::Serialize for ConflictMarker {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
