@@ -221,7 +221,7 @@ impl<'env> InstallTarget<'env> {
                 })
                 .flatten()
             {
-                if !dep.complexified_marker.evaluate(marker_env, &[]) {
+                if !dep.complexified_marker.satisfies(marker_env, extras, dev) {
                     continue;
                 }
 
@@ -252,9 +252,6 @@ impl<'env> InstallTarget<'env> {
                     // a specific marker environment and set of extras/groups.
                     // So at this point, we know the extras/groups have been
                     // satisfied, so we can safely drop the conflict marker.
-                    //
-                    // FIXME: Make the above true. We aren't actually checking
-                    // the conflict marker yet.
                     Edge::Dev(group.clone(), dep.complexified_marker.pep508().clone()),
                 );
 
@@ -350,7 +347,7 @@ impl<'env> InstallTarget<'env> {
                 Either::Right(package.dependencies.iter())
             };
             for dep in deps {
-                if !dep.complexified_marker.evaluate(marker_env, &[]) {
+                if !dep.complexified_marker.satisfies(marker_env, extras, dev) {
                     continue;
                 }
 

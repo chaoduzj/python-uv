@@ -1,5 +1,6 @@
 use itertools::Itertools;
 
+use uv_configuration::{DevGroupsManifest, ExtrasSpecification};
 use uv_normalize::ExtraName;
 use uv_pep508::{MarkerEnvironment, MarkerTree};
 use uv_pypi_types::Conflicts;
@@ -135,10 +136,30 @@ impl UniversalMarker {
 
     /// Returns true if this universal marker is satisfied by the given
     /// marker environment and list of activated extras.
-    ///
-    /// FIXME: This also needs to accept a list of groups.
     pub(crate) fn evaluate(&self, env: &MarkerEnvironment, extras: &[ExtraName]) -> bool {
         self.pep508_marker.evaluate(env, extras) && self.conflict_marker.evaluate(env, extras)
+    }
+
+    /// Returns true if this universal marker is satisfied by the given
+    /// marker environment and list of activated extras and groups.
+    ///
+    /// TODO: Articulate the difference between this and `evaluate`.
+    pub(crate) fn satisfies(
+        &self,
+        env: &MarkerEnvironment,
+        extras: &ExtrasSpecification,
+        _dev: &DevGroupsManifest,
+    ) -> bool {
+        if !self.pep508_marker.evaluate(env, &[]) {
+            return false;
+        }
+        let extra_list = match *extras {
+            // TODO(ag): This should still evaluate `dev`.
+            ExtrasSpecification::All => return true,
+            ExtrasSpecification::None => &[][..],
+            ExtrasSpecification::Some(ref list) => list,
+        };
+        self.conflict_marker.evaluate(env, extra_list)
     }
 
     /// Returns the PEP 508 marker for this universal marker.

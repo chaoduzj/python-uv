@@ -3618,7 +3618,7 @@ struct DependencyWire {
     extra: BTreeSet<ExtraName>,
     #[serde(default)]
     marker: SimplifiedMarkerTree,
-    #[serde(default)]
+    #[serde(rename = "conflict-marker", default)]
     conflict_marker: MarkerTree,
 }
 
