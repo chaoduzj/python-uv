@@ -41,6 +41,8 @@ jobs:
 
       - name: "Collect pull request context"
         run: |
+          set -o pipefail
+
           gh pr view "$PULL_REQUEST_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
             --json number,title,body,author,baseRefName,baseRefOid,headRefName,headRefOid,isDraft,labels,files,additions,deletions,changedFiles \
@@ -49,6 +51,11 @@ jobs:
           gh pr diff "$PULL_REQUEST_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
             > .pull-request-review.diff
+
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/pulls/$PULL_REQUEST_NUMBER/comments?per_page=100" \
+            | jq '[.[][] | {author: .user.login, body, path, line, original_line, side, start_line, original_start_line, start_side, commit_id, original_commit_id, in_reply_to_id, created_at, html_url}]' \
+            > .pull-request-review-comments.json
 
           {
             printf 'Pull request security review for #%s: %s\n\n' \
